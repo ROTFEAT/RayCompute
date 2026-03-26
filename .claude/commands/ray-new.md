@@ -41,6 +41,84 @@ python $RAY_DIR/skills/check_env.py
 - **已有 Python 脚本**: "帮我把这个脚本并行化" → 读取脚本，改造成 Ray 版本
 - **参考模板**: "给我一个调参的模板" → 直接提供对应模板
 
+### 第 1.5 步：数据源检测（关键！）
+
+理解用户需求后，**必须**判断任务是否涉及数据：
+
+**检测清单：**
+1. 用户提到了数据文件（CSV、Excel、Parquet、JSON）？
+2. 用户的脚本里有数据库连接（`mysql://`、`postgresql://`、`sqlite:///`、`pymysql`、`psycopg2`、`sqlalchemy`）？
+3. 用户提到了数据量（"一亿条"、"几个 GB"、"大量数据"）？
+4. 用户的脚本里读取了本地文件路径（`pd.read_csv("./data.csv")`、`open("data.json")`）？
+
+**如果检测到数据源，按以下流程处理：**
+
+#### 情况 A：本地文件（CSV/Parquet/JSON）
+```
+如果文件 < 50MB → 可以通过 working_dir 直接提交，无需上传
+如果文件 >= 50MB → 必须先上传到 MinIO：
+  python $RAY_DIR/skills/data_upload.py upload <文件路径> --name <项目名>/<文件名>
+```
+
+#### 情况 B：本地数据库（最常见的场景）
+用户的数据在本地 MySQL/PostgreSQL/SQLite 中，集群无法直接访问。流程：
+1. 确认数据库连接信息（类型、地址、库名、表名）
+2. 确认要导出的数据（整表？还是带条件查询？）
+3. 确认数据结构（哪些列？数据类型？大致行数？）
+4. 用 data_upload.py 导出到 MinIO：
+```bash
+python $RAY_DIR/skills/data_upload.py db "<连接字符串>" --table <表名> --name <项目名>/<表名>.parquet
+# 或带查询条件
+python $RAY_DIR/skills/data_upload.py db "<连接字符串>" --query "SELECT * FROM trades WHERE date > '2024-01-01'" --name <项目名>/trades.parquet
+```
+5. 导出完成后会打印 schema 信息（列名、数据类型、行数）
+6. **生成的 Ray 脚本中，读取数据的方式必须改为从 MinIO 读取**（不能连本地数据库）
+
+#### 情况 C：远程数据库（集群可直接访问）
+如果数据库在集群同一内网（如 192.168.3.x），Ray 任务可以直接连接。但注意：
+- 大量并发读取可能压垮数据库
+- 建议仍然先导出到 MinIO，按需分片读取
+
+**数据搬迁完成后，告知用户：**
+```
+数据已上传到 MinIO:
+  bucket: ray-data
+  路径:   <项目名>/<文件名>
+  行数:   X,XXX,XXX
+  大小:   XXX MB
+  列:     col1 (int64), col2 (float64), col3 (object), ...
+
+生成的 Ray 脚本将从 MinIO 读取数据，不再依赖你的本地数据库。
+```
+
+#### 生成脚本中的数据读取模板
+
+如果数据已上传到 MinIO，生成的脚本必须用以下方式读取：
+
+```python
+def load_data_from_minio():
+    """从 MinIO 加载数据（在集群 Worker 上执行）"""
+    from minio import Minio
+    import pandas as pd
+    import io
+    import os
+
+    client = Minio(
+        os.environ.get("MINIO_ENDPOINT", ""),
+        access_key=os.environ.get("MINIO_ACCESS_KEY", ""),
+        secret_key=os.environ.get("MINIO_SECRET_KEY", ""),
+        secure=False
+    )
+    resp = client.get_object("ray-data", "<项目名>/<文件名>")
+    df = pd.read_parquet(io.BytesIO(resp.read()))
+    print(f"加载 {len(df):,} 行数据")
+    return df
+```
+
+**注意：如果数据很大（> 1GB），不要在每个 Worker 都加载全量数据。应该：**
+- 在 driver 里加载一次，用 `ray.put(df)` 放入 object store
+- 或者按分片加载，每个 task 只处理一部分
+
 ### 第二步：选择任务模式
 
 根据用户需求，用以下决策树选择模板：

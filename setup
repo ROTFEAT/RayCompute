@@ -23,13 +23,13 @@ echo "  ✓ Python $PY_VER"
 echo ""
 echo "[2/6] 安装 Python 依赖..."
 if command -v uv >/dev/null 2>&1; then
-    uv pip install 'ray[default]' minio 2>/dev/null && echo "  ✓ ray, minio 已安装 (via uv)" || {
-        echo "  ✗ 安装失败，请手动运行: uv pip install 'ray[default]' minio"
+    uv pip install ray minio 2>/dev/null && echo "  ✓ ray, minio 已安装 (via uv)" || {
+        echo "  ✗ 安装失败，请手动运行: uv pip install ray minio"
         exit 1
     }
 else
-    pip3 install -q 'ray[default]' minio 2>/dev/null && echo "  ✓ ray, minio 已安装 (via pip)" || {
-        echo "  ✗ 安装失败，请手动运行: pip install 'ray[default]' minio"
+    pip3 install -q ray minio 2>/dev/null && echo "  ✓ ray, minio 已安装 (via pip)" || {
+        echo "  ✗ 安装失败，请手动运行: pip install ray minio"
         exit 1
     }
 fi

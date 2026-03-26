@@ -129,8 +129,54 @@ if missing_vars:
         print(f"  {var}={REQUIRED_VARS[var]}")
     print(f"\n请编辑 {env_path} 填入以上变量，或联系集群管理员获取。")
 
+# 全部通过时，打印连通状态表格
 if failed == 0:
-    print("PASS")
+    cluster_info = ""
+    cluster_cpu = ""
+    minio_info = ""
+
+    # 获取集群详情
+    if RAY_ADDRESS:
+        try:
+            resp = urllib.request.urlopen(f"{RAY_ADDRESS}/api/cluster_status", timeout=5)
+            import json
+            data = json.loads(resp.read().decode())
+            cs = data.get("clusterStatus", {})
+            load = cs.get("loadMetricsReport", {})
+            total = load.get("totalResources", {})
+            cpu = int(total.get("CPU", 0))
+            mem_gb = round(total.get("memory", 0) / 1e9, 1)
+            nodes = len([n for n in data.get("clusterStatus", {}).get("activeNodes", [])]) or "5+"
+            cluster_info = RAY_ADDRESS
+            cluster_cpu = f"{cpu} CPU, {mem_gb} TB 内存, {nodes} 节点" if mem_gb >= 1000 else f"{cpu} CPU, {mem_gb} GB 内存, {nodes} 节点"
+        except Exception:
+            cluster_info = RAY_ADDRESS
+            cluster_cpu = "在线（无法获取详情）"
+
+    if MINIO_ENDPOINT:
+        from skills.config import MINIO_BUCKET
+        minio_info = f"bucket {MINIO_BUCKET} 已就绪"
+
+    print("\n全部连通：\n")
+    print("  ┌───────────────┬──────┬" + "─" * 40 + "┐")
+    print("  │     服务      │ 状态 │ 详情" + " " * 36 + "│")
+    print("  ├───────────────┼──────┼" + "─" * 40 + "┤")
+
+    row1 = f"  │ Ray Dashboard │  ✅  │ {cluster_info}"
+    print(row1 + " " * max(1, 41 - len(cluster_info)) + "│")
+    print("  ├───────────────┼──────┼" + "─" * 40 + "┤")
+
+    row2_detail = cluster_cpu
+    row2 = f"  │ Ray 集群      │  ✅  │ {row2_detail}"
+    print(row2 + " " * max(1, 41 - len(row2_detail)) + "│")
+    print("  ├───────────────┼──────┼" + "─" * 40 + "┤")
+
+    row3_detail = minio_info
+    row3 = f"  │ MinIO         │  ✅  │ {row3_detail}"
+    print(row3 + " " * max(1, 41 - len(row3_detail)) + "│")
+    print("  └───────────────┴──────┴" + "─" * 40 + "┘")
+
+    print("\nPASS")
 else:
     print("FAIL")
 

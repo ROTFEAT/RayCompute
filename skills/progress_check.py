@@ -79,19 +79,18 @@ def analyze_progress(job_id):
     # 2. 集群资源
     cluster = get_cluster_status()
     if cluster:
-        # 解析已用/总计 CPU
+        # 解析已用/总计 CPU — API 格式: {"data":{"clusterStatus":{"loadMetricsReport":{"usage":{"CPU":[used,total]}}}}}
         try:
-            auto_scaling = cluster.get("autoscalingStatus", "")
-            # 尝试从 cluster_status 获取资源信息
-            usage = cluster.get("clusterStatus", {})
-            if usage:
-                load = usage.get("loadMetricsReport", {})
-                used = load.get("usedResources", {})
-                total = load.get("totalResources", {})
-                result["cpu_used"] = used.get("CPU", 0)
-                result["cpu_total"] = total.get("CPU", 0)
-                result["memory_used_gb"] = round(used.get("memory", 0) / 1e9, 1)
-                result["memory_total_gb"] = round(total.get("memory", 0) / 1e9, 1)
+            inner = cluster.get("data", cluster)
+            cs = inner.get("clusterStatus", {})
+            load = cs.get("loadMetricsReport", {})
+            usage = load.get("usage", {})
+            cpu_pair = usage.get("CPU", [0, 0])
+            mem_pair = usage.get("memory", [0, 0])
+            result["cpu_used"] = cpu_pair[0]
+            result["cpu_total"] = cpu_pair[1]
+            result["memory_used_gb"] = round(mem_pair[0] / 1e9, 1)
+            result["memory_total_gb"] = round(mem_pair[1] / 1e9, 1)
         except Exception:
             pass
 

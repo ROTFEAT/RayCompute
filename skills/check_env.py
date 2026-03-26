@@ -141,14 +141,23 @@ if failed == 0:
             resp = urllib.request.urlopen(f"{RAY_ADDRESS}/api/cluster_status", timeout=5)
             import json
             data = json.loads(resp.read().decode())
-            cs = data.get("clusterStatus", {})
+            # API 返回 {"result":true, "data": {"clusterStatus": {...}}}
+            inner = data.get("data", data)
+            cs = inner.get("clusterStatus", {})
             load = cs.get("loadMetricsReport", {})
-            total = load.get("totalResources", {})
-            cpu = int(total.get("CPU", 0))
-            mem_gb = round(total.get("memory", 0) / 1e9, 1)
-            nodes = len([n for n in data.get("clusterStatus", {}).get("activeNodes", [])]) or "5+"
+            # usage 格式: {"CPU": [used, total], "memory": [used, total]}
+            usage = load.get("usage", {})
+            cpu = int(usage.get("CPU", [0, 0])[1])
+            mem_bytes = usage.get("memory", [0, 0])[1]
+            mem_tb = round(mem_bytes / 1e12, 1)
+            # 节点数: 统计 node:x.x.x.x 的 key
+            node_count = sum(1 for k in usage if k.startswith("node:") and k != "node:InternalHead")
             cluster_info = RAY_ADDRESS
-            cluster_cpu = f"{cpu} CPU, {mem_gb} TB 内存, {nodes} 节点" if mem_gb >= 1000 else f"{cpu} CPU, {mem_gb} GB 内存, {nodes} 节点"
+            if mem_tb >= 1.0:
+                cluster_cpu = f"{cpu} CPU, {mem_tb} TB 内存, {node_count} 节点"
+            else:
+                mem_gb = round(mem_bytes / 1e9, 1)
+                cluster_cpu = f"{cpu} CPU, {mem_gb} GB 内存, {node_count} 节点"
         except Exception:
             cluster_info = RAY_ADDRESS
             cluster_cpu = "在线（无法获取详情）"

@@ -23,9 +23,9 @@ python $RAY_DIR/skills/update_check.py
 python $RAY_DIR/skills/check_env.py
 ```
 
-**版本检查：** 如果输出"有更新可用"，告知用户并建议更新。不阻断流程。
-
-**环境检查：** 如果输出 `FAIL`，提示运行 `cd $RAY_DIR && ./setup` 交互式配置。**环境检查通过后才继续。**
+**如果全部通过：不要输出任何检查结果，静默继续。不要说"环境检查通过"。**
+**如果有更新：** 一句话告知，不阻断。
+**如果 FAIL：** 提示运行 `cd $RAY_DIR && ./setup`。
 
 **后续所有命令中的 `skills/` 路径都替换为 `$RAY_DIR/skills/`。**
 

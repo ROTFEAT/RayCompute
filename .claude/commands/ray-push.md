@@ -30,7 +30,8 @@ python $RAY_DIR/skills/update_check.py
 python $RAY_DIR/skills/check_env.py
 ```
 
-**版本检查：** 如果输出"有更新可用"，告知用户并建议运行 `python skills/update_check.py --update` 更新。不阻断流程，用户可以选择稍后更新。
+**如果全部通过：不要输出任何检查结果，静默继续下一步。不要说"环境检查通过"。**
+**如果有更新：** 一句话告知，不阻断。
 
 **环境检查：** 如果输出 `FAIL`：
 - `.env` 不存在 → 提示运行 `./setup`

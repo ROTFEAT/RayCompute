@@ -34,7 +34,13 @@ python skills/check_env.py
 
 ### 第一步：确认目标脚本
 
-如果用户没有指定脚本，询问用户要提交哪个脚本。如果用户提到了脚本路径，读取该脚本。
+按以下优先级自动确定要提交的脚本，**不要让用户手动选择**：
+
+1. 用户在命令参数中指定了路径 → 直接使用
+2. 当前对话中刚用 `/ray-new` 生成了脚本 → 自动使用该脚本
+3. 用户在对话中提到了某个脚本文件 → 自动使用
+4. `tasks/` 目录下最近修改的 `.py` 文件 → 确认后使用
+5. 以上都没有 → 询问用户
 
 如果用户说"不知道怎么写 Ray 任务"或"帮我并行化"，建议使用 `/ray-new` 先生成任务脚本。
 
@@ -146,19 +152,24 @@ python skills/ray_job.py <script.py>
 
 ### 第六步：提交后指引
 
-任务提交成功后，**主动告知**用户以下信息：
+任务提交成功后，**必须主动告知**用户以下信息：
 
 ```
-任务已提交！Job ID: <job_id>
+任务已提交到集群！
 
-📊 查看状态: python skills/ray_job.py --status <job_id>
-📋 查看日志: python skills/ray_job.py --logs <job_id>
-📦 拉取结果: python skills/ray_job.py --result <job_id>
-📑 列出任务: python skills/ray_job.py --list
-🛑 停止任务: python skills/ray_job.py --stop <job_id>
+  Job ID: <job_id>
+  脚本:   <脚本路径>
 
-或者使用 /ray-status 查看集群和任务状态。
+  任务在集群上运行，不依赖你的电脑。
+  你可以关机、断开连接、关闭终端——任务不受影响。
+  Job ID 已保存到本地，下次打开随时可查。
+
+  回来后查看结果:
+    /ray-status              — 或 —
+    python skills/ray_job.py --result <job_id>
 ```
+
+**这段提示必须完整输出，不要省略"可以关机"的说明。**
 
 ### 第七步：依赖过多时建议镜像
 

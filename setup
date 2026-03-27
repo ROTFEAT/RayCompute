@@ -119,7 +119,7 @@ mkdir -p ~/.claude/commands
 echo "$SCRIPT_DIR" > ~/.claude/.ray-skills-path
 
 # 安装 /ray-status（保留），/ray-new 和 /ray-push 已降级
-for skill in ray-status; do
+for skill in ray-status ray-update; do
     cp "$SCRIPT_DIR/.claude/commands/${skill}.md" ~/.claude/commands/${skill}.md
     echo "  ✓ /${skill}"
 done

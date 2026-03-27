@@ -153,6 +153,16 @@ CLAUDEEOF
     echo "  ✓ 计算资源指令已写入 ~/.claude/CLAUDE.md"
 fi
 
+# 合并 hooks 到全局 settings.json（不覆盖已有配置）
+GLOBAL_SETTINGS="$HOME/.claude/settings.json"
+RAY_HOOK_MARKER="ray_compute.py"
+if [ -f "$GLOBAL_SETTINGS" ] && grep -q "$RAY_HOOK_MARKER" "$GLOBAL_SETTINGS" 2>/dev/null; then
+    echo "  ✓ 全局 hooks 已包含 Ray 集群提醒"
+else
+    python3 "$SCRIPT_DIR/skills/install_hooks.py" "$GLOBAL_SETTINGS" "$SCRIPT_DIR"
+    echo "  ✓ Ray 集群 hooks 已写入 ~/.claude/settings.json"
+fi
+
 # ─── 5. 安装 git hooks ───────────────────────────────────
 echo ""
 echo "[5/6] 安装 git hooks..."

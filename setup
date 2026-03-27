@@ -36,21 +36,16 @@ if [ -n "$VENV_PATH" ]; then
     fi
 fi
 
-# ─── 2. 安装依赖 ─────────────────────────────────────────
+# ─── 2. 依赖检查 ─────────────────────────────────────────
 echo ""
-echo "[2/6] 安装 Python 依赖..."
-# 切到 /tmp 安装，避免项目目录名 ray 和 pip 包名冲突
+echo "[2/6] 检查依赖..."
+echo "  核心功能（ray_compute.py）使用纯 HTTP API，无需安装额外包。"
+# minio 包是可选的（结果拉取更可靠），不强制
 pushd /tmp > /dev/null
-if command -v uv >/dev/null 2>&1; then
-    uv pip install ray minio 2>/dev/null && echo "  ✓ ray, minio 已安装 (via uv)" || {
-        echo "  ✗ 安装失败，请手动运行: cd /tmp && uv pip install ray minio"
-        popd > /dev/null; exit 1
-    }
+if python3 -c "import minio" 2>/dev/null; then
+    echo "  ✓ minio 包已安装（结果拉取更可靠）"
 else
-    pip3 install -q ray minio 2>/dev/null && echo "  ✓ ray, minio 已安装 (via pip)" || {
-        echo "  ✗ 安装失败，请手动运行: cd /tmp && pip install ray minio"
-        popd > /dev/null; exit 1
-    }
+    echo "  - minio 包未安装（可选，安装后结果拉取更可靠: pip install minio）"
 fi
 popd > /dev/null
 

@@ -77,18 +77,32 @@ def error(code, message, suggestion="", traceback_str=""):
     })
 
 
-def build_submit_cmd(script_path, pip_packages=None):
-    """构建 ray job submit 命令"""
+def api_request(path, method="GET", data=None):
+    """调 Ray Dashboard REST API（纯标准库，不需要 ray CLI）"""
+    import urllib.request
+    url = f"{RAY_ADDRESS}{path}"
+    if data is not None:
+        req = urllib.request.Request(url, data=json.dumps(data).encode(),
+                                     headers={"Content-Type": "application/json"}, method=method)
+    else:
+        req = urllib.request.Request(url, method=method)
+    try:
+        resp = urllib.request.urlopen(req, timeout=30)
+        return json.loads(resp.read().decode())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def submit_job(script_path, pip_packages=None):
+    """通过 REST API 提交任务（不需要 ray CLI）"""
+    import urllib.request
+    import zipfile
+    import io
+    import base64
+
     abs_script = os.path.abspath(script_path)
     working_dir = os.path.dirname(abs_script) or "."
-    entrypoint = os.path.relpath(abs_script, working_dir)
-
-    cmd = [
-        "ray", "job", "submit",
-        "--address", RAY_ADDRESS,
-        "--working-dir", working_dir,
-        "--no-wait",
-    ]
+    entrypoint = f"python {os.path.relpath(abs_script, working_dir)}"
 
     runtime_env = {
         "env_vars": {
@@ -96,101 +110,117 @@ def build_submit_cmd(script_path, pip_packages=None):
             "MINIO_ACCESS_KEY": MINIO_ACCESS_KEY,
             "MINIO_SECRET_KEY": MINIO_SECRET_KEY,
             "MINIO_BUCKET": MINIO_BUCKET,
-        }
+        },
+        "working_dir": working_dir,
     }
     if pip_packages:
         runtime_env["pip"] = pip_packages
 
-    cmd += ["--runtime-env-json", json.dumps(runtime_env)]
-    cmd += ["--", "python", entrypoint]
-    return cmd
+    payload = {
+        "entrypoint": entrypoint,
+        "runtime_env": runtime_env,
+        "entrypoint_num_cpus": 0,
+    }
 
-
-def extract_job_id(stdout):
-    """从 ray job submit 输出中提取 Job ID"""
-    for line in stdout.splitlines():
-        if "raysubmit_" in line:
-            for word in line.split():
-                w = word.strip("'\".,")
-                if w.startswith("raysubmit_"):
-                    return w
-    return None
+    url = f"{RAY_ADDRESS}/api/jobs/"
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=60)
+        result = json.loads(resp.read().decode())
+        return result.get("job_id") or result.get("submission_id"), None
+    except Exception as e:
+        return None, str(e)
 
 
 def get_job_status(job_id):
-    """查询 job 状态"""
-    env = os.environ.copy()
-    env["RAY_ADDRESS"] = RAY_ADDRESS
-    result = subprocess.run(
-        ["ray", "job", "status", job_id],
-        capture_output=True, text=True, env=env, timeout=30
-    )
-    status_text = result.stdout.strip()
-    if "SUCCEEDED" in status_text:
+    """通过 REST API 查询状态"""
+    result = api_request(f"/api/jobs/{job_id}")
+    if "error" in result:
+        return "unknown"
+    status = result.get("status", "").upper()
+    if "SUCCEEDED" in status:
         return "succeeded"
-    elif "FAILED" in status_text:
+    elif "FAILED" in status:
         return "failed"
-    elif "RUNNING" in status_text:
+    elif "RUNNING" in status:
         return "running"
-    elif "PENDING" in status_text:
+    elif "PENDING" in status:
         return "pending"
-    elif "STOPPED" in status_text:
+    elif "STOPPED" in status:
         return "stopped"
     return "unknown"
 
 
 def get_job_logs(job_id):
-    """获取 job 日志"""
-    env = os.environ.copy()
-    env["RAY_ADDRESS"] = RAY_ADDRESS
-    result = subprocess.run(
-        ["ray", "job", "logs", job_id],
-        capture_output=True, text=True, env=env, timeout=60
-    )
-    return result.stdout
+    """通过 REST API 获取日志"""
+    result = api_request(f"/api/jobs/{job_id}/logs")
+    if "error" in result:
+        return ""
+    return result.get("logs", "")
 
 
 def fetch_result(job_id):
-    """从 MinIO 下载结果到本地 ray-result/<job_id>/，返回结果数据和本地路径"""
-    try:
-        from minio import Minio
-    except ImportError:
-        return None, []
+    """从 MinIO 下载结果到本地 ray-result/<job_id>/，返回结果数据和本地路径。
+    优先用 minio 包，fallback 到纯 HTTP（零依赖）。"""
+    import urllib.request
 
-    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
-                   secret_key=MINIO_SECRET_KEY, secure=False)
-
-    prefix = f"jobs/{job_id}/"
-    objects = list(client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True))
-    if not objects:
-        return None, []
-
-    # 下载到本地 ray-result/
     ray_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     local_dir = os.path.join(ray_dir, "ray-result", job_id)
     os.makedirs(local_dir, exist_ok=True)
 
+    prefix = f"jobs/{job_id}/"
+
+    # 尝试用 minio 包（更可靠）
+    try:
+        from minio import Minio
+        client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
+                       secret_key=MINIO_SECRET_KEY, secure=False)
+        objects = list(client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True))
+        if not objects:
+            return None, []
+
+        results = {}
+        local_files = []
+        for obj in objects:
+            filename = obj.object_name.replace(prefix, "")
+            local_path = os.path.join(local_dir, filename)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            client.fget_object(MINIO_BUCKET, obj.object_name, local_path)
+            local_files.append(local_path)
+
+            if filename.endswith(".json"):
+                try:
+                    with open(local_path) as f:
+                        results[filename] = json.load(f)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    results[filename] = f"file://{local_path}"
+            else:
+                results[filename] = f"file://{local_path}"
+        return results, local_files
+
+    except ImportError:
+        pass
+
+    # Fallback: 纯 HTTP 方式（MinIO 兼容 S3 ListObjects API 但需签名，这里用简单路径猜测）
+    common_files = ["result.json", "summary.json"]
     results = {}
     local_files = []
-    for obj in objects:
-        filename = obj.object_name.replace(prefix, "")
+    for filename in common_files:
+        url = f"http://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{prefix}{filename}"
         local_path = os.path.join(local_dir, filename)
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-
-        # 下载到本地
-        client.fget_object(MINIO_BUCKET, obj.object_name, local_path)
-        local_files.append(local_path)
-
-        # 解析 JSON 内容
-        if filename.endswith(".json"):
-            try:
+        try:
+            urllib.request.urlretrieve(url, local_path)
+            local_files.append(local_path)
+            if filename.endswith(".json"):
                 with open(local_path) as f:
                     results[filename] = json.load(f)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                results[filename] = f"file://{local_path}"
-        else:
-            results[filename] = f"file://{local_path}"
+        except Exception:
+            if os.path.exists(local_path):
+                os.unlink(local_path)
 
+    if not results:
+        return None, []
     return results, local_files
 
 
@@ -223,19 +253,11 @@ def cmd_run(args):
     validate_script(args.script)
 
     pip = args.pip.split(",") if args.pip else None
-    cmd = build_submit_cmd(args.script, pip)
-
-    env = os.environ.copy()
-    env["RAY_ADDRESS"] = RAY_ADDRESS
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
-
-    if result.returncode != 0:
-        error("SUBMIT_FAILED", result.stderr.strip(),
-              "检查集群是否在线: python skills/check_env.py")
-
-    job_id = extract_job_id(result.stdout)
+    job_id, err = submit_job(args.script, pip)
+    if err:
+        error("SUBMIT_FAILED", err, "检查集群是否在线: python skills/check_env.py")
     if not job_id:
-        error("NO_JOB_ID", "无法提取 Job ID", result.stdout[:500])
+        error("NO_JOB_ID", "无法获取 Job ID")
 
     # 记录到本地历史
     history_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".jobs")
@@ -321,16 +343,9 @@ def cmd_submit(args):
     validate_script(args.script)
 
     pip = args.pip.split(",") if args.pip else None
-    cmd = build_submit_cmd(args.script, pip)
-
-    env = os.environ.copy()
-    env["RAY_ADDRESS"] = RAY_ADDRESS
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
-
-    if result.returncode != 0:
-        error("SUBMIT_FAILED", result.stderr.strip())
-
-    job_id = extract_job_id(result.stdout)
+    job_id, err = submit_job(args.script, pip)
+    if err:
+        error("SUBMIT_FAILED", err)
     if not job_id:
         error("NO_JOB_ID", "无法提取 Job ID")
 
@@ -425,20 +440,13 @@ def cmd_exec(args):
 
         # 提交
         pip = args.pip.split(",") if args.pip else None
-        cmd = build_submit_cmd(tmp_path, pip)
-
-        env = os.environ.copy()
-        env["RAY_ADDRESS"] = RAY_ADDRESS
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
-
-        if result.returncode != 0:
+        job_id, err = submit_job(tmp_path, pip)
+        if err:
             os.unlink(tmp_path)
-            error("SUBMIT_FAILED", result.stderr.strip())
-
-        job_id = extract_job_id(result.stdout)
+            error("SUBMIT_FAILED", err)
         if not job_id:
             os.unlink(tmp_path)
-            error("NO_JOB_ID", "无法提取 Job ID")
+            error("NO_JOB_ID", "无法获取 Job ID")
 
         # 同步等待
         timeout = args.timeout or 300

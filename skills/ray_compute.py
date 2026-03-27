@@ -31,6 +31,33 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from skills.config import RAY_ADDRESS, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET
 
 RESULT_SIZE_THRESHOLD = 1024 * 1024  # 1MB，超过存 MinIO
+PLACEHOLDER_VALUES = {"your_access_key", "your_secret_key", "your_ray_head_ip", "your_minio_host", ""}
+
+
+def check_config():
+    """前置配置检查，缺失时返回清晰的错误"""
+    ray_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(ray_dir, ".env")
+
+    if not os.path.exists(env_path):
+        error("CONFIG_MISSING",
+              f".env 文件不存在: {env_path}",
+              f"运行 cd {ray_dir} && ./setup 配置集群连接信息")
+
+    missing = []
+    if not RAY_ADDRESS or "your_" in (RAY_ADDRESS or ""):
+        missing.append("RAY_DASHBOARD_URL（Ray Dashboard 地址）")
+    if not MINIO_ENDPOINT or MINIO_ENDPOINT in PLACEHOLDER_VALUES:
+        missing.append("MINIO_ENDPOINT（MinIO API 地址）")
+    if not MINIO_ACCESS_KEY or MINIO_ACCESS_KEY in PLACEHOLDER_VALUES:
+        missing.append("MINIO_ACCESS_KEY（MinIO 访问密钥）")
+    if not MINIO_SECRET_KEY or MINIO_SECRET_KEY in PLACEHOLDER_VALUES:
+        missing.append("MINIO_SECRET_KEY（MinIO 私密密钥）")
+
+    if missing:
+        error("CONFIG_INCOMPLETE",
+              f"以下配置未填写或为占位符: {', '.join(missing)}",
+              f"运行 cd {ray_dir} && ./setup 交互式配置，或手动编辑 {env_path}")
 
 
 def output(data):
@@ -124,11 +151,11 @@ def get_job_logs(job_id):
 
 
 def fetch_result(job_id):
-    """从 MinIO 下载结果"""
+    """从 MinIO 下载结果到本地 ray-result/<job_id>/，返回结果数据和本地路径"""
     try:
         from minio import Minio
     except ImportError:
-        return None
+        return None, []
 
     client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
                    secret_key=MINIO_SECRET_KEY, secure=False)
@@ -136,24 +163,35 @@ def fetch_result(job_id):
     prefix = f"jobs/{job_id}/"
     objects = list(client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True))
     if not objects:
-        return None
+        return None, []
+
+    # 下载到本地 ray-result/
+    ray_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local_dir = os.path.join(ray_dir, "ray-result", job_id)
+    os.makedirs(local_dir, exist_ok=True)
 
     results = {}
+    local_files = []
     for obj in objects:
         filename = obj.object_name.replace(prefix, "")
-        resp = client.get_object(MINIO_BUCKET, obj.object_name)
-        data = resp.read()
+        local_path = os.path.join(local_dir, filename)
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
+        # 下载到本地
+        client.fget_object(MINIO_BUCKET, obj.object_name, local_path)
+        local_files.append(local_path)
+
+        # 解析 JSON 内容
         if filename.endswith(".json"):
             try:
-                results[filename] = json.loads(data.decode("utf-8"))
-            except json.JSONDecodeError:
-                results[filename] = data.decode("utf-8")
+                with open(local_path) as f:
+                    results[filename] = json.load(f)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                results[filename] = f"file://{local_path}"
         else:
-            # 大文件返回 URI
-            results[filename] = f"minio://{MINIO_BUCKET}/{obj.object_name}"
+            results[filename] = f"file://{local_path}"
 
-    return results
+    return results, local_files
 
 
 def validate_script(script_path):
@@ -178,6 +216,7 @@ def validate_script(script_path):
 
 def cmd_run(args):
     """同步执行：提交 → 等 → 拿结果"""
+    check_config()
     if not os.path.exists(args.script):
         error("FILE_NOT_FOUND", f"脚本不存在: {args.script}")
 
@@ -218,7 +257,7 @@ def cmd_run(args):
         status = get_job_status(job_id)
         if status == "succeeded":
             # 拿结果
-            result_data = fetch_result(job_id)
+            result_data, local_files = fetch_result(job_id)
             logs = get_job_logs(job_id)
 
             # 尝试从日志最后提取 JSON 输出
@@ -239,12 +278,15 @@ def cmd_run(args):
                 "duration": duration,
             }
 
+            # 本地文件路径（AI 可用 Read 工具直接读取）
+            if local_files:
+                out["local_files"] = local_files
+
             if result_data:
-                # 检查大小
                 result_str = json.dumps(result_data, default=str)
                 if len(result_str) > RESULT_SIZE_THRESHOLD:
-                    out["result_uri"] = f"ray-result/jobs/{job_id}/"
                     out["result_summary"] = {k: type(v).__name__ for k, v in result_data.items()}
+                    out["hint"] = f"结果较大，已保存到本地。用 Read 工具读取: {local_files[0] if local_files else ''}"
                 else:
                     out["result"] = result_data
             elif log_result:
@@ -272,6 +314,7 @@ def cmd_run(args):
 
 def cmd_submit(args):
     """异步提交：立即返回 job_id"""
+    check_config()
     if not os.path.exists(args.script):
         error("FILE_NOT_FOUND", f"脚本不存在: {args.script}")
 
@@ -303,7 +346,7 @@ def cmd_result(args):
     status = get_job_status(args.job_id)
 
     if status == "succeeded":
-        result_data = fetch_result(args.job_id)
+        result_data, local_files = fetch_result(args.job_id)
         logs = get_job_logs(args.job_id)
 
         log_result = None
@@ -354,6 +397,7 @@ def cmd_result(args):
 
 def cmd_exec(args):
     """从 stdin 读取代码执行"""
+    check_config()
     code = sys.stdin.read()
     if not code.strip():
         error("EMPTY_CODE", "stdin 没有代码")
@@ -403,7 +447,7 @@ def cmd_exec(args):
             status = get_job_status(job_id)
             if status == "succeeded":
                 logs = get_job_logs(job_id)
-                result_data = fetch_result(job_id)
+                result_data, local_files = fetch_result(job_id)
 
                 log_result = None
                 for line in reversed(logs.strip().splitlines()):

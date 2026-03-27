@@ -52,6 +52,22 @@ python skills/ray_compute.py result <job_id>
 - **短任务用 `run`**（同步），长任务用 `submit`（异步）+ `result`（轮询）。
 - **超时设置**：默认 300s，中等任务设 `--timeout 600`，超过 10 分钟用异步。
 
+## 配置
+
+所有配置（集群地址、MinIO 密钥）自动从 `.env` 文件读取，你不需要知道具体值。
+`ray_compute.py` 提交任务时会自动注入 MinIO 环境变量到集群 Worker。
+
+如果你生成的代码需要在集群上读写 MinIO 数据，用环境变量：
+```python
+import os
+endpoint = os.environ["MINIO_ENDPOINT"]
+access_key = os.environ["MINIO_ACCESS_KEY"]
+secret_key = os.environ["MINIO_SECRET_KEY"]
+bucket = os.environ.get("MINIO_BUCKET", "ray-result")
+```
+
+**不要硬编码任何 IP 地址或密钥。**
+
 ## Ray 代码规范
 
 ```python

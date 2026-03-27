@@ -94,24 +94,25 @@ def api_request(path, method="GET", data=None):
 
 
 def submit_job(script_path, pip_packages=None):
-    """通过 REST API 提交任务（不需要 ray CLI）"""
+    """通过 REST API 提交任务（不需要 ray CLI）。
+    把脚本内容读出来，用 python -c 内联执行，避免 working_dir 路径问题。"""
     import urllib.request
-    import zipfile
-    import io
-    import base64
 
-    abs_script = os.path.abspath(script_path)
-    working_dir = os.path.dirname(abs_script) or "."
-    entrypoint = f"python {os.path.relpath(abs_script, working_dir)}"
+    with open(script_path) as f:
+        code = f.read()
+
+    # 用 base64 编码避免 shell 转义问题
+    import base64
+    code_b64 = base64.b64encode(code.encode()).decode()
+    entrypoint = f'python -c "import base64;exec(base64.b64decode(\'{code_b64}\'))"'
 
     runtime_env = {
         "env_vars": {
-            "MINIO_ENDPOINT": MINIO_ENDPOINT,
-            "MINIO_ACCESS_KEY": MINIO_ACCESS_KEY,
-            "MINIO_SECRET_KEY": MINIO_SECRET_KEY,
-            "MINIO_BUCKET": MINIO_BUCKET,
+            "MINIO_ENDPOINT": MINIO_ENDPOINT or "",
+            "MINIO_ACCESS_KEY": MINIO_ACCESS_KEY or "",
+            "MINIO_SECRET_KEY": MINIO_SECRET_KEY or "",
+            "MINIO_BUCKET": MINIO_BUCKET or "",
         },
-        "working_dir": working_dir,
     }
     if pip_packages:
         runtime_env["pip"] = pip_packages

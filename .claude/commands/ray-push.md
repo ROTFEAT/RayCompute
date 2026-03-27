@@ -71,6 +71,17 @@ python $RAY_DIR/skills/check_env.py
 9. **Python 3.13+ 语法**: 使用了 3.13+ 特性（如 `type` 参数默认值等）— 集群是 Python 3.12
 10. **minio 依赖未声明**: 使用了 `save_result()` 或 `from minio import` 但没把 `minio` 加入依赖列表
 11. **ray.init() 写了固定地址**: `ray.init("ray://...")` 会绕过 Jobs API。应使用 `ray.init()` 不带参数
+12. **单任务高内存风险（OOM）**: 检测以下模式，**任一命中即阻断**：
+    - `scipy.optimize.differential_evolution` + `vectorized=True` + 维度 > 15 — 单 Worker 内存会爆
+    - `@ray.remote` 函数内加载完整大数据集（> 1GB）且没用 `ray.put()` 共享
+    - `popsize` / `maxiter` 参数值异常大（popsize > 100 且维度 > 15）
+    - 没有声明 `memory` 资源但代码中有大矩阵运算（`np.zeros`/`np.random.randn` 维度 > 10000）
+
+    **修复方案**：
+    - 高维度优化器应在 driver 本地跑，只把小维度子任务发到 Worker
+    - 大数据用 `ray.put()` 一次放入 object store，Worker 引用而非各自加载
+    - 内存密集型任务声明 `@ray.remote(num_cpus=1, memory=4*1024**3)` 让调度器感知
+13. **pip 依赖格式错误**: `--pip` 参数中多个包用空格而非逗号分隔（如 `scipy minio` 应为 `scipy,minio`）
 
 #### 建议项（不阻断提交，但建议优化）
 
@@ -108,6 +119,12 @@ python $RAY_DIR/skills/check_env.py
 10. **numpy 只读陷阱**: 从 object store 取出的 numpy 数组是只读的，如有修改操作需先 `.copy()`
 
 11. **缺少 job 命名**: 建议通过 `--metadata` 加自定义名称，方便在 Dashboard 区分不同任务
+
+12. **未声明 memory 资源**: 涉及大矩阵、大 DataFrame、优化器的任务应声明 `memory` 参数，否则 Ray 调度器不知道实际内存需求，可能把多个高内存任务调到同一节点导致 OOM
+
+13. **高维优化器应拆分**: `scipy.optimize` 的 `differential_evolution`、`dual_annealing` 等全局优化器，如果维度 > 15，建议拆成"driver 粗筛 + Worker 细调"两阶段，避免单任务压垮节点
+
+14. **max_retries 过高**: 如果任务因 OOM 失败，重试只会反复压垮同一节点。OOM 类任务建议 `max_retries=0` 或 `retry_exceptions=False`，快速失败而不是级联故障
 
 ### 第三步：输出验证报告
 
